@@ -1,0 +1,53 @@
+# Rust / Cargo
+/target/
+**/target/
+# Cargo.lock is committed for reproducible contract builds
+*.rs.bk
+*.pdb
+
+# Soroban / Stellar
+.soroban/
+*.wasm
+*.wasm.hash
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# Debug and logs
+*.log
+logs/
+debug/
+
+# Build and dist
+dist/
+build/
+out/
+
+# Coverage and tests
+coverage/
+*.profraw
+*.profdata
+tarpaulin-report.html
