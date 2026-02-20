@@ -1,12 +1,22 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Symbol};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, Address, Env, Symbol, Vec,
+};
 
 #[contracterror]
 #[repr(u32)]
 pub enum Error {
     NotFound = 404,
     Unauthorized = 401,
+}
+
+/// Storage keys for secondary indices.
+#[contracttype]
+#[derive(Clone)]
+pub enum DataKey {
+    /// Maps a merchant address to its list of subscription IDs.
+    MerchantSubs(Address),
 }
 
 #[contracttype]
@@ -66,6 +76,17 @@ impl SubscriptionVault {
         };
         let id = Self::_next_id(&env);
         env.storage().instance().set(&id, &sub);
+
+        // Maintain merchant → subscription-ID index
+        let key = DataKey::MerchantSubs(sub.merchant.clone());
+        let mut ids: Vec<u32> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+        ids.push_back(id);
+        env.storage().instance().set(&key, &ids);
+
         Ok(id)
     }
 
@@ -130,6 +151,64 @@ impl SubscriptionVault {
             .instance()
             .get(&subscription_id)
             .ok_or(Error::NotFound)
+    }
+
+    /// Returns subscriptions for a merchant, paginated by offset.
+    ///
+    /// * `merchant` – the merchant address to query.
+    /// * `start`    – 0-based offset into the merchant's subscription list.
+    /// * `limit`    – maximum number of subscriptions to return.
+    ///
+    /// Results are ordered chronologically (insertion order).
+    /// Returns an empty `Vec` when the merchant has no subscriptions or
+    /// `start` is beyond the end of the list.
+    pub fn get_subscriptions_by_merchant(
+        env: Env,
+        merchant: Address,
+        start: u32,
+        limit: u32,
+    ) -> Vec<Subscription> {
+        let key = DataKey::MerchantSubs(merchant);
+        let ids: Vec<u32> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let len = ids.len();
+        if start >= len || limit == 0 {
+            return Vec::new(&env);
+        }
+
+        let end = if start + limit > len {
+            len
+        } else {
+            start + limit
+        };
+
+        let mut result = Vec::new(&env);
+        let mut i = start;
+        while i < end {
+            let sub_id = ids.get(i).unwrap();
+            if let Some(sub) = env.storage().instance().get::<u32, Subscription>(&sub_id) {
+                result.push_back(sub);
+            }
+            i += 1;
+        }
+        result
+    }
+
+    /// Returns the number of subscriptions for a given merchant.
+    ///
+    /// Useful for dashboards and pagination metadata.
+    pub fn get_merchant_subscription_count(env: Env, merchant: Address) -> u32 {
+        let key = DataKey::MerchantSubs(merchant);
+        let ids: Vec<u32> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+        ids.len()
     }
 
     fn _next_id(env: &Env) -> u32 {
