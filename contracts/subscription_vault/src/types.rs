@@ -17,12 +17,12 @@ pub enum Error {
     NotActive = 1002,
     InvalidStatusTransition = 400,
     BelowMinimumTopup = 402,
-    /// Initialization called when already initialized.
-    AlreadyInitialized = 405,
     /// Arithmetic overflow in computation (e.g. amount * intervals).
     Overflow = 403,
     /// Charge failed due to insufficient prepaid balance.
     InsufficientBalance = 1003,
+    /// Initialization called when already initialized.
+    AlreadyInitialized = 405,
 }
 
 impl Error {
@@ -35,9 +35,9 @@ impl Error {
             Error::NotActive => 1002,
             Error::InvalidStatusTransition => 400,
             Error::BelowMinimumTopup => 402,
-            Error::AlreadyInitialized => 405,
             Error::Overflow => 403,
             Error::InsufficientBalance => 1003,
+            Error::AlreadyInitialized => 405,
         }
     }
 }
