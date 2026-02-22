@@ -1,77 +1,36 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Symbol};
+mod admin;
+mod charge_core;
+mod merchant;
+mod queries;
+mod state_machine;
+mod subscription;
+mod types;
 
 mod safe_math;
-use crate::safe_math::*;
+use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
 
-#[contracterror]
-#[repr(u32)]
-#[derive(Debug, PartialEq)]
-pub enum Error {
-    NotFound = 404,
-    Unauthorized = 401,
-    BelowMinimumTopup = 402,
-    Overflow = 500,
-    Underflow = 501,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SubscriptionStatus {
-    Active = 0,
-    Paused = 1,
-    Cancelled = 2,
-    InsufficientBalance = 3,
-}
-
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct Subscription {
-    pub subscriber: Address,
-    pub merchant: Address,
-    pub amount: i128,
-    pub interval_seconds: u64,
-    pub last_payment_timestamp: u64,
-    pub status: SubscriptionStatus,
-    pub prepaid_balance: i128,
-    pub usage_enabled: bool,
-}
+pub use state_machine::{can_transition, get_allowed_transitions, validate_status_transition};
+pub use types::{BatchChargeResult, Error, Subscription, SubscriptionStatus};
 
 #[contract]
 pub struct SubscriptionVault;
 
 #[contractimpl]
 impl SubscriptionVault {
-    /// Initialize the contract (e.g. set token and admin). Extend as needed.
     pub fn init(env: Env, token: Address, admin: Address, min_topup: i128) -> Result<(), Error> {
-        env.storage().instance().set(&Symbol::new(&env, "token"), &token);
-        env.storage().instance().set(&Symbol::new(&env, "admin"), &admin);
-        env.storage().instance().set(&Symbol::new(&env, "min_topup"), &min_topup);
-        Ok(())
+        admin::do_init(&env, token, admin, min_topup)
     }
 
-    /// Update the minimum top-up threshold. Only callable by admin.
-    /// 
-    /// # Arguments
-    /// * `min_topup` - Minimum amount (in token base units) required for deposit_funds.
-    ///                 Prevents inefficient micro-deposits. Typical range: 1-10 USDC (1_000000 - 10_000000 for 6 decimals).
     pub fn set_min_topup(env: Env, admin: Address, min_topup: i128) -> Result<(), Error> {
-        admin.require_auth();
-        let stored_admin: Address = env.storage().instance().get(&Symbol::new(&env, "admin")).ok_or(Error::NotFound)?;
-        if admin != stored_admin {
-            return Err(Error::Unauthorized);
-        }
-        env.storage().instance().set(&Symbol::new(&env, "min_topup"), &min_topup);
-        Ok(())
+        admin::do_set_min_topup(&env, admin, min_topup)
     }
 
-    /// Get the current minimum top-up threshold.
     pub fn get_min_topup(env: Env) -> Result<i128, Error> {
-        env.storage().instance().get(&Symbol::new(&env, "min_topup")).ok_or(Error::NotFound)
+        admin::get_min_topup(&env)
     }
 
-    /// Create a new subscription. Caller deposits initial USDC; contract stores agreement.
     pub fn create_subscription(
         env: Env,
         subscriber: Address,
@@ -80,128 +39,74 @@ impl SubscriptionVault {
         interval_seconds: u64,
         usage_enabled: bool,
     ) -> Result<u32, Error> {
-        subscriber.require_auth();
-        validate_non_negative(amount)?;
-        // TODO: transfer initial deposit from subscriber to contract, then store subscription
-        // When implementing deposit transfer, use safe_add_balance() to set prepaid_balance
-        let sub = Subscription {
-            subscriber: subscriber.clone(),
+        subscription::do_create_subscription(
+            &env,
+            subscriber,
             merchant,
             amount,
             interval_seconds,
-            last_payment_timestamp: env.ledger().timestamp(),
-            status: SubscriptionStatus::Active,
-            prepaid_balance: 0i128, // TODO: set from initial deposit
             usage_enabled,
-        };
-        let id = Self::_next_id(&env);
-        env.storage().instance().set(&id, &sub);
-        Ok(id)
+        )
     }
 
-    /// Subscriber deposits more USDC into their vault for this subscription.
-    /// 
-    /// # Minimum top-up enforcement
-    /// Rejects deposits below the configured minimum threshold to prevent inefficient
-    /// micro-transactions that waste gas and complicate accounting. The minimum is set
-    /// globally at contract initialization and adjustable by admin via `set_min_topup`.
     pub fn deposit_funds(
         env: Env,
         subscription_id: u32,
         subscriber: Address,
         amount: i128,
     ) -> Result<(), Error> {
-        subscriber.require_auth();
-        validate_non_negative(amount)?;
-
-        let min_topup: i128 = env.storage().instance().get(&Symbol::new(&env, "min_topup")).ok_or(Error::NotFound)?;
-        if amount < min_topup {
-            return Err(Error::BelowMinimumTopup);
-        }
-
-        // TODO: transfer USDC from subscriber to contract
-        let mut sub: Subscription = env
-            .storage()
-            .instance()
-            .get(&subscription_id)
-            .ok_or(Error::NotFound)?;
-        sub.prepaid_balance = safe_add_balance(sub.prepaid_balance, amount)?;
-        env.storage().instance().set(&subscription_id, &sub);
-
-        
-        // TODO: transfer USDC from subscriber, increase prepaid_balance for subscription_id
-        let _ = (env, subscription_id, amount);
-
-        Ok(())
+        subscription::do_deposit_funds(&env, subscription_id, subscriber, amount)
     }
 
-    /// Billing engine (backend) calls this to charge one interval. Deducts from vault, pays merchant.
     pub fn charge_subscription(env: Env, subscription_id: u32) -> Result<(), Error> {
-        // TODO: require_caller admin or authorized billing service
-        let mut sub: Subscription = env
-            .storage()
-            .instance()
-            .get(&subscription_id)
-            .ok_or(Error::NotFound)?;
-        // TODO: check interval has elapsed before charging
-        // TODO: transfer USDC to merchant
-        sub.prepaid_balance = safe_sub_balance(sub.prepaid_balance, sub.amount)?;
-        sub.last_payment_timestamp = env.ledger().timestamp();
-        env.storage().instance().set(&subscription_id, &sub);
-        Ok(())
+        subscription::do_charge_subscription(&env, subscription_id)
     }
 
-    /// Subscriber or merchant cancels the subscription. Remaining balance can be withdrawn by subscriber.
+    pub fn estimate_topup_for_intervals(
+        env: Env,
+        subscription_id: u32,
+        num_intervals: u32,
+    ) -> Result<i128, Error> {
+        queries::estimate_topup_for_intervals(&env, subscription_id, num_intervals)
+    }
+
+    pub fn batch_charge(
+        env: Env,
+        subscription_ids: Vec<u32>,
+    ) -> Result<Vec<BatchChargeResult>, Error> {
+        admin::do_batch_charge(&env, &subscription_ids)
+    }
+
     pub fn cancel_subscription(
         env: Env,
         subscription_id: u32,
         authorizer: Address,
     ) -> Result<(), Error> {
-        authorizer.require_auth();
-        // TODO: load subscription, set status Cancelled, allow withdraw of prepaid_balance
-        let _ = (env, subscription_id);
-        Ok(())
+        subscription::do_cancel_subscription(&env, subscription_id, authorizer)
     }
 
-    /// Pause subscription (no charges until resumed).
     pub fn pause_subscription(
         env: Env,
         subscription_id: u32,
         authorizer: Address,
     ) -> Result<(), Error> {
-        authorizer.require_auth();
-        // TODO: load subscription, set status Paused
-        let _ = (env, subscription_id);
-        Ok(())
+        subscription::do_pause_subscription(&env, subscription_id, authorizer)
     }
 
-    /// Merchant withdraws accumulated USDC to their wallet.
-    pub fn withdraw_merchant_funds(
-        _env: Env,
-        merchant: Address,
-        amount: i128,
+    pub fn resume_subscription(
+        env: Env,
+        subscription_id: u32,
+        authorizer: Address,
     ) -> Result<(), Error> {
-        merchant.require_auth();
-        validate_non_negative(amount)?;
-        // TODO: load merchant's accumulated balance from storage
-        // TODO: use safe_sub_balance() to deduct from merchant's balance
-        // TODO: transfer token to merchant
-        Ok(())
+        subscription::do_resume_subscription(&env, subscription_id, authorizer)
     }
 
-    /// Read subscription by id (for indexing and UI).
+    pub fn withdraw_merchant_funds(env: Env, merchant: Address, amount: i128) -> Result<(), Error> {
+        merchant::withdraw_merchant_funds(&env, merchant, amount)
+    }
+
     pub fn get_subscription(env: Env, subscription_id: u32) -> Result<Subscription, Error> {
-        env.storage()
-            .instance()
-            .get(&subscription_id)
-            .ok_or(Error::NotFound)
-    }
-
-    fn _next_id(env: &Env) -> u32 {
-        let key = Symbol::new(env, "next_id");
-        let id: u32 = env.storage().instance().get(&key).unwrap_or(0);
-        env.storage().instance().set(&key, &(id + 1));
-        id
+        queries::get_subscription(&env, subscription_id)
     }
 }
 
