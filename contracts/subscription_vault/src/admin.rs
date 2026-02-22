@@ -9,18 +9,18 @@ use soroban_sdk::{Address, Env, Symbol, Vec};
 pub fn do_init(
     env: &Env,
     token: Address,
+    token_decimals: u32,
     admin: Address,
     min_topup: i128,
 ) -> Result<(), Error> {
-    env.storage()
-        .instance()
-        .set(&Symbol::new(env, "token"), &token);
-    env.storage()
-        .instance()
-        .set(&Symbol::new(env, "admin"), &admin);
-    env.storage()
-        .instance()
-        .set(&Symbol::new(env, "min_topup"), &min_topup);
+    let instance = env.storage().instance();
+    if instance.has(&Symbol::new(env, "token")) {
+        return Err(Error::AlreadyInitialized);
+    }
+    instance.set(&Symbol::new(env, "token"), &token);
+    instance.set(&Symbol::new(env, "token_decimals"), &token_decimals);
+    instance.set(&Symbol::new(env, "admin"), &admin);
+    instance.set(&Symbol::new(env, "min_topup"), &min_topup);
     Ok(())
 }
 

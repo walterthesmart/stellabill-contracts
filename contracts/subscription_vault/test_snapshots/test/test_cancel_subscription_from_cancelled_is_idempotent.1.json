@@ -233,6 +233,14 @@
                         "val": {
                           "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                         }
+                      },
+                      {
+                        "key": {
+                          "symbol": "token_decimals"
+                        },
+                        "val": {
+                          "u32": 7
+                        }
                       }
                     ]
                   }

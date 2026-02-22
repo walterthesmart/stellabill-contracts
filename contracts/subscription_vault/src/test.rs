@@ -196,7 +196,7 @@ fn setup_test_env() -> (Env, SubscriptionVaultClient<'static>, Address, Address)
     let token = Address::generate(&env);
     let admin = Address::generate(&env);
     let min_topup = 1_000000i128; // 1 USDC
-    client.init(&token, &admin, &min_topup);
+    client.init(&token, &7, &admin, &min_topup);
 
     (env, client, token, admin)
 }
@@ -270,7 +270,7 @@ fn test_init_with_min_topup() {
     let token = Address::generate(&env);
     let admin = Address::generate(&env);
     let min_topup = 1_000000i128; // 1 USDC
-    client.init(&token, &admin, &min_topup);
+    client.init(&token, &7, &admin, &min_topup);
 
     assert_eq!(client.get_min_topup(), min_topup);
 }
@@ -601,7 +601,7 @@ fn setup(env: &Env, interval_seconds: u64) -> (SubscriptionVaultClient<'static>,
     let client = SubscriptionVaultClient::new(env, &contract_id);
     let token = Address::generate(env);
     let admin = Address::generate(env);
-    client.init(&token, &admin, &1_000000i128);
+    client.init(&token, &7, &admin, &1_000000i128);
     let subscriber = Address::generate(env);
     let merchant = Address::generate(env);
     let id =
@@ -746,7 +746,7 @@ fn test_min_topup_below_threshold() {
     let subscriber = Address::generate(&env);
     let min_topup = 5_000000i128; // 5 USDC
 
-    client.init(&token, &admin, &min_topup);
+    client.init(&token, &7, &admin, &min_topup);
 
     let result = client.try_deposit_funds(&0, &subscriber, &4_999999);
     assert!(result.is_err());
@@ -761,7 +761,7 @@ fn test_charge_subscription_auth() {
     let token = Address::generate(&env);
     let admin = Address::generate(&env);
     let min_topup = 1_000000i128;
-    client.init(&token, &admin, &min_topup);
+    client.init(&token, &7, &admin, &min_topup);
 
     // Test authorized call
     env.mock_all_auths();
@@ -786,7 +786,7 @@ fn test_charge_subscription_unauthorized() {
     let token = Address::generate(&env);
     let admin = Address::generate(&env);
     let min_topup = 1_000000i128;
-    client.init(&token, &admin, &min_topup);
+    client.init(&token, &7, &admin, &min_topup);
 
     // Create a subscription so ID 0 exists (using mock_all_auths for setup)
     let subscriber = Address::generate(&env);
@@ -819,7 +819,7 @@ fn test_charge_subscription_admin() {
     let token = Address::generate(&env);
     let admin = Address::generate(&env);
     let min_topup = 1_000000i128;
-    client.init(&token, &admin, &min_topup);
+    client.init(&token, &7, &admin, &min_topup);
 
     // Create a subscription so ID 0 exists (using mock_all_auths for setup)
     let subscriber = Address::generate(&env);
@@ -856,7 +856,7 @@ fn test_min_topup_exactly_at_threshold() {
     let merchant = Address::generate(&env);
     let min_topup = 5_000000i128; // 5 USDC
 
-    client.init(&token, &admin, &min_topup);
+    client.init(&token, &7, &admin, &min_topup);
     client.create_subscription(&subscriber, &merchant, &1000i128, &86400u64, &false);
 
     let result = client.try_deposit_funds(&0, &subscriber, &min_topup);
@@ -876,7 +876,7 @@ fn test_min_topup_above_threshold() {
     let merchant = Address::generate(&env);
     let min_topup = 5_000000i128; // 5 USDC
 
-    client.init(&token, &admin, &min_topup);
+    client.init(&token, &7, &admin, &min_topup);
     client.create_subscription(&subscriber, &merchant, &1000i128, &86400u64, &false);
 
     let result = client.try_deposit_funds(&0, &subscriber, &10_000000);
@@ -895,7 +895,7 @@ fn test_set_min_topup_by_admin() {
     let initial_min = 1_000000i128;
     let new_min = 10_000000i128;
 
-    client.init(&token, &admin, &initial_min);
+    client.init(&token, &7, &admin, &initial_min);
     assert_eq!(client.get_min_topup(), initial_min);
 
     client.set_min_topup(&admin, &new_min);
@@ -914,7 +914,7 @@ fn test_set_min_topup_unauthorized() {
     let non_admin = Address::generate(&env);
     let min_topup = 1_000000i128;
 
-    client.init(&token, &admin, &min_topup);
+    client.init(&token, &7, &admin, &min_topup);
 
     let result = client.try_set_min_topup(&non_admin, &5_000000);
     assert!(result.is_err());
@@ -981,7 +981,7 @@ fn setup_batch_env(env: &Env) -> (SubscriptionVaultClient<'static>, Address, u32
     let client = SubscriptionVaultClient::new(env, &contract_id);
     let token = Address::generate(env);
     let admin = Address::generate(env);
-    client.init(&token, &admin, &1_000000i128);
+    client.init(&token, &7, &admin, &1_000000i128);
     let subscriber = Address::generate(env);
     let merchant = Address::generate(env);
     let id0 = client.create_subscription(&subscriber, &merchant, &1000i128, &INTERVAL, &false);
@@ -1023,7 +1023,7 @@ fn test_batch_charge_partial_failure() {
     let client = SubscriptionVaultClient::new(&env, &contract_id);
     let token = Address::generate(&env);
     let admin = Address::generate(&env);
-    client.init(&token, &admin, &1_000000i128);
+    client.init(&token, &7, &admin, &1_000000i128);
     let subscriber = Address::generate(&env);
     let merchant = Address::generate(&env);
     let id0 = client.create_subscription(&subscriber, &merchant, &1000i128, &INTERVAL, &false);

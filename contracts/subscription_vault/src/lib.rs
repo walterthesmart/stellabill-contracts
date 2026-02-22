@@ -18,8 +18,14 @@ pub struct SubscriptionVault;
 
 #[contractimpl]
 impl SubscriptionVault {
-    pub fn init(env: Env, token: Address, admin: Address, min_topup: i128) -> Result<(), Error> {
-        admin::do_init(&env, token, admin, min_topup)
+    pub fn init(
+        env: Env,
+        token: Address,
+        token_decimals: u32,
+        admin: Address,
+        min_topup: i128,
+    ) -> Result<(), Error> {
+        admin::do_init(&env, token, token_decimals, admin, min_topup)
     }
 
     pub fn set_min_topup(env: Env, admin: Address, min_topup: i128) -> Result<(), Error> {
@@ -100,11 +106,7 @@ impl SubscriptionVault {
         subscription::do_resume_subscription(&env, subscription_id, authorizer)
     }
 
-    pub fn withdraw_merchant_funds(
-        env: Env,
-        merchant: Address,
-        amount: i128,
-    ) -> Result<(), Error> {
+    pub fn withdraw_merchant_funds(env: Env, merchant: Address, amount: i128) -> Result<(), Error> {
         merchant::withdraw_merchant_funds(&env, merchant, amount)
     }
 
