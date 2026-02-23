@@ -1,51 +1,88 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Symbol};
+// ── Modules ──────────────────────────────────────────────────────────────────
+mod admin;
+mod charge_core;
+mod merchant;
+mod queries;
+mod state_machine;
+mod subscription;
+pub mod types;
 
-#[contracterror]
-#[repr(u32)]
-pub enum Error {
-    NotFound = 404,
-    Unauthorized = 401,
-}
+// ── Re-exports (used by tests and external consumers) ────────────────────────
+pub use state_machine::{can_transition, get_allowed_transitions, validate_status_transition};
+pub use types::*;
 
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SubscriptionStatus {
-    Active = 0,
-    Paused = 1,
-    Cancelled = 2,
-    InsufficientBalance = 3,
-}
+pub use queries::compute_next_charge_info;
+use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
 
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct Subscription {
-    pub subscriber: Address,
-    pub merchant: Address,
-    pub amount: i128,
-    pub interval_seconds: u64,
-    pub last_payment_timestamp: u64,
-    pub status: SubscriptionStatus,
-    pub prepaid_balance: i128,
-    pub usage_enabled: bool,
-}
+// ── Contract ─────────────────────────────────────────────────────────────────
 
 #[contract]
 pub struct SubscriptionVault;
 
 #[contractimpl]
 impl SubscriptionVault {
-    /// Initialize the contract (e.g. set token and admin). Extend as needed.
-    pub fn init(env: Env, token: Address, admin: Address) -> Result<(), Error> {
-        env.storage()
-            .instance()
-            .set(&Symbol::new(&env, "token"), &token);
-        env.storage()
-            .instance()
-            .set(&Symbol::new(&env, "admin"), &admin);
-        Ok(())
+    // ── Admin / Config ───────────────────────────────────────────────────
+
+    /// Initialize the contract: set token address, admin, and minimum top-up.
+    pub fn init(env: Env, token: Address, admin: Address, min_topup: i128) -> Result<(), Error> {
+        admin::do_init(&env, token, admin, min_topup)
     }
+
+    /// Update the minimum top-up threshold. Only callable by admin.
+    pub fn set_min_topup(env: Env, admin: Address, min_topup: i128) -> Result<(), Error> {
+        admin::do_set_min_topup(&env, admin, min_topup)
+    }
+
+    /// Get the current minimum top-up threshold.
+    pub fn get_min_topup(env: Env) -> Result<i128, Error> {
+        admin::get_min_topup(&env)
+    }
+
+    /// Get the current admin address.
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        admin::do_get_admin(&env)
+    }
+
+    /// Rotate admin to a new address. Only callable by current admin.
+    ///
+    /// # Security
+    ///
+    /// - Immediate effect — old admin loses access instantly.
+    /// - Irreversible without the new admin's cooperation.
+    /// - Emits an `admin_rotation` event for audit trail.
+    pub fn rotate_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), Error> {
+        admin::do_rotate_admin(&env, current_admin, new_admin)
+    }
+
+    /// **ADMIN ONLY**: Recover stranded funds from the contract.
+    ///
+    /// Tightly-scoped mechanism for recovering funds that have become
+    /// inaccessible through normal operations. Each recovery emits a
+    /// `RecoveryEvent` with full audit details.
+    pub fn recover_stranded_funds(
+        env: Env,
+        admin: Address,
+        recipient: Address,
+        amount: i128,
+        reason: RecoveryReason,
+    ) -> Result<(), Error> {
+        admin::do_recover_stranded_funds(&env, admin, recipient, amount, reason)
+    }
+
+    /// Charge a batch of subscriptions in one transaction. Admin only.
+    ///
+    /// Returns a per-subscription result vector so callers can identify
+    /// which charges succeeded and which failed (with error codes).
+    pub fn batch_charge(
+        env: Env,
+        subscription_ids: Vec<u32>,
+    ) -> Result<Vec<BatchChargeResult>, Error> {
+        admin::do_batch_charge(&env, &subscription_ids)
+    }
+
+    // ── Subscription lifecycle ───────────────────────────────────────────
 
     /// Create a new subscription. Caller deposits initial USDC; contract stores agreement.
     pub fn create_subscription(
@@ -56,81 +93,36 @@ impl SubscriptionVault {
         interval_seconds: u64,
         usage_enabled: bool,
     ) -> Result<u32, Error> {
-        subscriber.require_auth();
-        // TODO: transfer initial deposit from subscriber to contract, then store subscription
-        let sub = Subscription {
-            subscriber: subscriber.clone(),
+        subscription::do_create_subscription(
+            &env,
+            subscriber,
             merchant,
             amount,
             interval_seconds,
-            last_payment_timestamp: env.ledger().timestamp(),
-            status: SubscriptionStatus::Active,
-            prepaid_balance: 0i128, // TODO: set from initial deposit
             usage_enabled,
-        };
-        let id = Self::_next_id(&env);
-        env.storage().instance().set(&id, &sub);
-        Ok(id)
+        )
     }
 
-    /// Subscriber deposits more USDC into their vault for this subscription.
+    /// Subscriber deposits more USDC into their prepaid vault.
+    ///
+    /// Rejects deposits below the configured minimum threshold.
     pub fn deposit_funds(
         env: Env,
         subscription_id: u32,
         subscriber: Address,
         amount: i128,
     ) -> Result<(), Error> {
-        subscriber.require_auth();
-
-        let mut sub = Self::get_subscription(env.clone(), subscription_id)?;
-        if subscriber != sub.subscriber {
-            return Err(Error::Unauthorized);
-        }
-
-        let token_addr: Address = env
-            .storage()
-            .instance()
-            .get(&Symbol::new(&env, "token"))
-            .unwrap();
-        let token_client = soroban_sdk::token::Client::new(&env, &token_addr);
-
-        token_client.transfer(&subscriber, &env.current_contract_address(), &amount);
-
-        sub.prepaid_balance += amount;
-        env.storage().instance().set(&subscription_id, &sub);
-
-        Ok(())
+        subscription::do_deposit_funds(&env, subscription_id, subscriber, amount)
     }
 
-    /// Billing engine (backend) calls this to charge one interval. Deducts from vault, pays merchant.
-    pub fn charge_subscription(_env: Env, _subscription_id: u32) -> Result<(), Error> {
-        // TODO: require_caller admin or authorized billing service
-        // TODO: load subscription, check interval and balance, transfer to merchant, update last_payment_timestamp and prepaid_balance
-        Ok(())
-    }
-
-    /// Subscriber or merchant cancels the subscription. Remaining balance can be withdrawn by subscriber.
+    /// Cancel the subscription. Allowed from Active, Paused, or InsufficientBalance.
+    /// Transitions to the terminal `Cancelled` state.
     pub fn cancel_subscription(
         env: Env,
         subscription_id: u32,
         authorizer: Address,
     ) -> Result<(), Error> {
-        authorizer.require_auth();
-
-        let mut sub = Self::get_subscription(env.clone(), subscription_id)?;
-
-        if sub.status == SubscriptionStatus::Cancelled {
-            return Ok(());
-        }
-
-        if authorizer != sub.subscriber && authorizer != sub.merchant {
-            return Err(Error::Unauthorized);
-        }
-
-        sub.status = SubscriptionStatus::Cancelled;
-        env.storage().instance().set(&subscription_id, &sub);
-
-        Ok(())
+        subscription::do_cancel_subscription(&env, subscription_id, authorizer)
     }
 
     /// Subscriber withdraws their remaining prepaid_balance after cancellation.
@@ -139,78 +131,111 @@ impl SubscriptionVault {
         subscription_id: u32,
         subscriber: Address,
     ) -> Result<(), Error> {
-        subscriber.require_auth();
-
-        let mut sub = Self::get_subscription(env.clone(), subscription_id)?;
-
-        if subscriber != sub.subscriber {
-            return Err(Error::Unauthorized);
-        }
-
-        // Optionally require it to be Cancelled, or let them withdraw any unused anytime?
-        // Let's require Cancelled for now to fit the cancel -> refund flow cleanly.
-        if sub.status != SubscriptionStatus::Cancelled {
-            return Err(Error::Unauthorized); // Or another error, e.g. InvalidStatus
-        }
-
-        let amount_to_refund = sub.prepaid_balance;
-        if amount_to_refund > 0 {
-            sub.prepaid_balance = 0;
-            env.storage().instance().set(&subscription_id, &sub);
-
-            let token_addr: Address = env
-                .storage()
-                .instance()
-                .get(&Symbol::new(&env, "token"))
-                .unwrap();
-            let token_client = soroban_sdk::token::Client::new(&env, &token_addr);
-
-            token_client.transfer(
-                &env.current_contract_address(),
-                &subscriber,
-                &amount_to_refund,
-            );
-        }
-
-        Ok(())
+        subscription::do_withdraw_subscriber_funds(&env, subscription_id, subscriber)
     }
 
-    /// Pause subscription (no charges until resumed).
+    /// Pause subscription (no charges until resumed). Allowed from Active.
     pub fn pause_subscription(
         env: Env,
         subscription_id: u32,
         authorizer: Address,
     ) -> Result<(), Error> {
-        authorizer.require_auth();
-        // TODO: load subscription, set status Paused
-        let _ = (env, subscription_id);
-        Ok(())
+        subscription::do_pause_subscription(&env, subscription_id, authorizer)
     }
+
+    /// Resume a subscription to Active. Allowed from Paused or InsufficientBalance.
+    pub fn resume_subscription(
+        env: Env,
+        subscription_id: u32,
+        authorizer: Address,
+    ) -> Result<(), Error> {
+        subscription::do_resume_subscription(&env, subscription_id, authorizer)
+    }
+
+    // ── Charging ─────────────────────────────────────────────────────────
+
+    /// Billing engine calls this to charge one interval.
+    ///
+    /// Enforces strict interval timing and replay protection.
+    pub fn charge_subscription(env: Env, subscription_id: u32) -> Result<(), Error> {
+        charge_core::charge_one(&env, subscription_id, None)
+    }
+
+    /// Charge a metered usage amount against the subscription's prepaid balance.
+    ///
+    /// Designed for integration with an **off-chain usage metering service**:
+    /// the service measures consumption, then calls this entrypoint with the
+    /// computed `usage_amount` to debit the subscriber's vault.
+    ///
+    /// # Requirements
+    ///
+    /// * The subscription must be `Active`.
+    /// * `usage_enabled` must be `true` on the subscription.
+    /// * `usage_amount` must be positive (`> 0`).
+    /// * `prepaid_balance` must be >= `usage_amount`.
+    ///
+    /// # Behaviour
+    ///
+    /// On success, `prepaid_balance` is reduced by `usage_amount`.  If the
+    /// debit drains the balance to zero the subscription transitions to
+    /// `InsufficientBalance` status, signalling that no further charges
+    /// (interval or usage) can proceed until the subscriber tops up.
+    ///
+    /// # Errors
+    ///
+    /// | Variant | Reason |
+    /// |---------|--------|
+    /// | `NotFound` | Subscription ID does not exist. |
+    /// | `NotActive` | Subscription is not `Active`. |
+    /// | `UsageNotEnabled` | `usage_enabled` is `false`. |
+    /// | `InvalidAmount` | `usage_amount` is zero or negative. |
+    /// | `InsufficientPrepaidBalance` | Prepaid balance cannot cover the debit. |
+    pub fn charge_usage(env: Env, subscription_id: u32, usage_amount: i128) -> Result<(), Error> {
+        charge_core::charge_usage_one(&env, subscription_id, usage_amount)
+    }
+
+    // ── Merchant ─────────────────────────────────────────────────────────
 
     /// Merchant withdraws accumulated USDC to their wallet.
-    pub fn withdraw_merchant_funds(
-        _env: Env,
-        merchant: Address,
-        _amount: i128,
-    ) -> Result<(), Error> {
-        merchant.require_auth();
-        // TODO: deduct from merchant's balance in contract, transfer token to merchant
-        Ok(())
+    pub fn withdraw_merchant_funds(env: Env, merchant: Address, amount: i128) -> Result<(), Error> {
+        merchant::withdraw_merchant_funds(&env, merchant, amount)
     }
 
-    /// Read subscription by id (for indexing and UI).
+    // ── Queries ──────────────────────────────────────────────────────────
+
+    /// Read subscription by id.
     pub fn get_subscription(env: Env, subscription_id: u32) -> Result<Subscription, Error> {
-        env.storage()
-            .instance()
-            .get(&subscription_id)
-            .ok_or(Error::NotFound)
+        queries::get_subscription(&env, subscription_id)
     }
 
-    fn _next_id(env: &Env) -> u32 {
-        let key = Symbol::new(env, "next_id");
-        let id: u32 = env.storage().instance().get(&key).unwrap_or(0);
-        env.storage().instance().set(&key, &(id + 1));
-        id
+    /// Estimate how much a subscriber needs to deposit to cover N future intervals.
+    pub fn estimate_topup_for_intervals(
+        env: Env,
+        subscription_id: u32,
+        num_intervals: u32,
+    ) -> Result<i128, Error> {
+        queries::estimate_topup_for_intervals(&env, subscription_id, num_intervals)
+    }
+
+    /// Get estimated next charge info (timestamp + whether charge is expected).
+    pub fn get_next_charge_info(env: Env, subscription_id: u32) -> Result<NextChargeInfo, Error> {
+        let sub = queries::get_subscription(&env, subscription_id)?;
+        Ok(compute_next_charge_info(&sub))
+    }
+
+    /// Return subscriptions for a merchant, paginated.
+    pub fn get_subscriptions_by_merchant(
+        env: Env,
+        merchant: Address,
+        start: u32,
+        limit: u32,
+    ) -> Vec<Subscription> {
+        queries::get_subscriptions_by_merchant(&env, merchant, start, limit)
+    }
+
+    /// Return the total number of subscriptions for a merchant.
+    pub fn get_merchant_subscription_count(env: Env, merchant: Address) -> u32 {
+        queries::get_merchant_subscription_count(&env, merchant)
     }
 }
 
