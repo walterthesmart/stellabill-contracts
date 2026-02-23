@@ -25,7 +25,7 @@ pub fn do_create_subscription(
     subscriber.require_auth();
     let sub = Subscription {
         subscriber: subscriber.clone(),
-        merchant,
+        merchant: merchant.clone(),
         amount,
         interval_seconds,
         last_payment_timestamp: env.ledger().timestamp(),
@@ -64,6 +64,10 @@ pub fn do_deposit_funds(
         .checked_add(amount)
         .ok_or(Error::Overflow)?;
     env.storage().instance().set(&subscription_id, &sub);
+    env.events().publish(
+        (Symbol::new(env, "deposited"), subscription_id),
+        (subscriber, amount, sub.prepaid_balance),
+    );
     Ok(())
 }
 

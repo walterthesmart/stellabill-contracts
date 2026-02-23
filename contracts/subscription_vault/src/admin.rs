@@ -16,6 +16,10 @@ pub fn do_init(env: &Env, token: Address, admin: Address, min_topup: i128) -> Re
     env.storage()
         .instance()
         .set(&Symbol::new(env, "min_topup"), &min_topup);
+    env.events().publish(
+        (Symbol::new(env, "initialized"),),
+        (token, admin, min_topup),
+    );
     Ok(())
 }
 
@@ -35,6 +39,8 @@ pub fn do_set_min_topup(env: &Env, admin: Address, min_topup: i128) -> Result<()
     env.storage()
         .instance()
         .set(&Symbol::new(env, "min_topup"), &min_topup);
+    env.events()
+        .publish((Symbol::new(env, "min_topup_updated"),), min_topup);
     Ok(())
 }
 
