@@ -2936,4 +2936,3 @@ fn test_list_subscriptions_multiple_merchants() {
         );
     }
 }
-

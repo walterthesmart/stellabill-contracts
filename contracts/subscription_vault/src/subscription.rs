@@ -205,4 +205,3 @@ pub fn do_withdraw_subscriber_funds(
 
     Ok(())
 }
-
